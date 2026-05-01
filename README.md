@@ -21,9 +21,11 @@
 <p align="center">
     <a href="https://arxiv.org/pdf/2602.10090"><img src="https://img.shields.io/badge/arXiv-2602.10090-b31b1b.svg" alt="arXiv"></a>
     <a href="https://huggingface.co/datasets/Snowflake/AgentWorldModel-1K"><img src="https://img.shields.io/badge/🤗-Environments-yellow.svg" alt="HuggingFace"></a>
+    <a href="https://huggingface.co/spaces/ChilleD/agent_world_model_env"><img src="https://img.shields.io/badge/🤗-Live Demo-green.svg" alt="HuggingFace"></a>
     <a href="https://huggingface.co/Snowflake/Arctic-AWM-4B"><img src="https://img.shields.io/badge/🤗-AWM4B-blue.svg" alt="HuggingFace"></a>
     <a href="https://huggingface.co/Snowflake/Arctic-AWM-8B"><img src="https://img.shields.io/badge/🤗-AWM8B-blue.svg" alt="HuggingFace"></a>
     <a href="https://huggingface.co/Snowflake/Arctic-AWM-14B"><img src="https://img.shields.io/badge/🤗-AWM14B-blue.svg" alt="HuggingFace"></a>
+    <a href="https://github.com/meta-pytorch/OpenEnv/tree/main/envs/agent_world_model_env"><img src="https://img.shields.io/badge/⚓️-RL Infra-orange.svg" alt="RL Infra"></a>
 </p>
 
 <p align="left">
@@ -33,26 +35,20 @@
 ---
 
 ## 📣 News
+- May 1, 2026: AWM got accepted to ICML 2026 🎉, and its infra got merged into [meta-pytorch/OpenEnv](https://github.com/meta-pytorch/OpenEnv) supporting large-scale agentic RL training! Have a live demo try at [huggingface space](https://huggingface.co/spaces/ChilleD/agent_world_model_env) 🤗!
 - Mar 16, 2026: we added the verification demo, please refer to [Verification](#verification) section!
 - Feb 10, 2026: we open-sourced the synthesis pipeline, 1,000 synthesized environments and RL trained agents at [Huggingface](https://huggingface.co/collections/Snowflake/agent-world-model)!
 
-## 🎯 Overview
-
-The AWM synthesis pipeline incldues:
-
-1. Start from a high-level **scenario** (e.g., "an online shopping platform")
-2. Generate **user tasks** that serve as functional requirements
-3. Synthesize a **SQLite database** (schema + sample data) as the state backend
-4. Generate a **Python interface layer** (FastAPI + MCP) as the action/observation space
-5. Generate **verification code** that inspects database state changes for reward signals
 
 ## 🔮 Resources
-We released the syntheszied 1,000 executable environments and corresponding tasks, databases, and verification in huggingface. Please checkout huggingface repo at [Snowflake/AgentWorldModel-1K](https://huggingface.co/datasets/Snowflake/AgentWorldModel-1K). 
+We released the syntheszied 1,000 executable environments and corresponding tasks, databases, and verification in huggingface. Please checkout huggingface repo at [Snowflake/AgentWorldModel-1K](https://huggingface.co/datasets/Snowflake/AgentWorldModel-1K).  You can freely interact with these environments online at [HuggingFace Space](https://huggingface.co/spaces/ChilleD/agent_world_model_env).
 
 | Resource | Link |
 |----------|------|
 | 📄 Paper | [📄 arxiv.org/abs/2602.10090](https://arxiv.org/abs/2602.10090) |
 | 💻 Code | [💻 Snowflake-Labs/agent-world-model](https://github.com/Snowflake-Labs/agent-world-model) |
+| ⚓️ RL Infra | [⚓️ meta-pytorch/OpenEnv](https://github.com/meta-pytorch/OpenEnv/tree/main/envs/agent_world_model_env) |
+| 🛜 Live Demo | [🤗 HuggingFace Space](https://huggingface.co/spaces/ChilleD/agent_world_model_env) |
 | 📦 AgentWorldModel-1K | [🤗 Snowflake/AgentWorldModel-1K](https://huggingface.co/datasets/Snowflake/AgentWorldModel-1K) |
 | 🤖 Arctic-AWM-4B | [🤗 Snowflake/Arctic-AWM-4B](https://huggingface.co/Snowflake/Arctic-AWM-4B) |
 | 🤖 Arctic-AWM-8B | [🤗 Snowflake/Arctic-AWM-8B](https://huggingface.co/Snowflake/Arctic-AWM-8B) |
@@ -63,7 +59,7 @@ If you want to directly use our synthesized environments, please download by
 ```bash
 hf download Snowflake/AgentWorldModel-1K --repo-type dataset --local-dir ./outputs/
 ```
-Then you can skip to [Environment Management](#environment-management) and [Agent Demo](#agent-demo) to start using the environments with the agent demo.
+Then you can skip to [Environment Management](#environment-management) and [Agent Demo](#agent-demo) to start using the environments locally.
 
 
 ## 📦 Setup
