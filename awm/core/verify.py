@@ -78,6 +78,64 @@ class Config:
                 )
 
 
+def infer_run_root(run_dir: str) -> str | None:
+    task_dir = os.path.basename(os.path.normpath(run_dir))
+    scenario_dir = os.path.dirname(os.path.normpath(run_dir))
+    if not task_dir.startswith("task_") or not scenario_dir:
+        return None
+    return os.path.dirname(scenario_dir)
+
+
+def refresh_run_summary(run_root: str) -> None:
+    results = []
+    for root, _, files in os.walk(run_root):
+        if "verify.code.json" in files:
+            verify_path = os.path.join(root, "verify.code.json")
+        elif "verify.sql.json" in files:
+            verify_path = os.path.join(root, "verify.sql.json")
+        else:
+            continue
+
+        try:
+            with open(verify_path) as f:
+                item = json.load(f)
+        except Exception as e:
+            logger.warning(f"Skipping invalid verify file {verify_path}: {e}")
+            continue
+
+        rel_dir = os.path.relpath(root, run_root)
+        item["run_dir"] = rel_dir
+        results.append(item)
+
+    results.sort(key=lambda x: (str(x.get("scenario", "")), int(x.get("task_id", -1))))
+
+    results_path = os.path.join(run_root, "results.jsonl")
+    with open(results_path, "w") as f:
+        for item in results:
+            f.write(json.dumps(item, ensure_ascii=False, default=str) + "\n")
+
+    total = len(results)
+    counts = {}
+    for item in results:
+        reward_type = item.get("reward_type", "unknown")
+        counts[reward_type] = counts.get(reward_type, 0) + 1
+
+    complete = counts.get("complete", 0)
+    summary = {
+        "run_root": run_root,
+        "total": total,
+        "complete": complete,
+        "others": counts.get("others", 0),
+        "judge_error": counts.get("judge_error", 0),
+        "counts": counts,
+        "score": (complete / total) if total else 0.0,
+    }
+
+    summary_path = os.path.join(run_root, "summary.json")
+    tools_json_save(summary, summary_path)
+    logger.info(f"Refreshed run summary: {summary_path}")
+
+
 
 def _call_verifier_func(verify_func, initial_db_path, final_db_path, final_answer=None):
     """Call a verifier function with signature-aware argument passing."""
@@ -436,6 +494,10 @@ async def run_verify(config: Config):
     output_path = os.path.join(run_dir, f"verify.{mode}.json")
     tools_json_save(output, output_path)
     logger.info(f"Saved verification result to {output_path}")
+
+    run_root = infer_run_root(run_dir)
+    if run_root:
+        refresh_run_summary(run_root)
 
     return output
 

@@ -66,8 +66,13 @@ class Config:
     temperature: float = 1.0
     # Max completion tokens
     max_tokens: int = 2048
-    # Output directory for saving trajectory. Defaults to outputs/agents/<timestamp>
+    # Output directory for saving trajectory. If unset, defaults to:
+    # outputs/runs/<run_name>/<scenario>/task_<task_id>
     output_dir: str | None = None
+    # Root directory for grouped runs. Can also be set with AWM_RUN_ROOT.
+    run_root: str | None = None
+    # Run name under outputs/runs. Can also be set with AWM_RUN_NAME.
+    run_name: str | None = None
     # Path to generated environments file
     envs_path: str = "./outputs/gen_envs.jsonl"
     # Path to generated tasks file
@@ -83,6 +88,33 @@ class Config:
         if self.task is None:
             print(self)
             assert self.scenario is not None and self.task_id is not None, "task is None, you must specify the scenario and task_id to lookup the task"
+
+
+def sanitize_run_component(value: str | None, fallback: str = "model") -> str:
+    text = value or fallback
+    text = text.split("/")[-1]
+    text = re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("._-")
+    return text or fallback
+
+
+def resolve_output_dir(config: Config, scenario: str | None, task_id: int | None, model: str, timestamp: str) -> tuple[str, str]:
+    if config.output_dir:
+        output_dir = config.output_dir
+        return output_dir, os.path.dirname(os.path.dirname(output_dir))
+
+    run_root = config.run_root or os.environ.get("AWM_RUN_ROOT")
+    if not run_root:
+        run_name = config.run_name or os.environ.get("AWM_RUN_NAME")
+        if not run_name:
+            run_name = f"awm_{sanitize_run_component(model)}_{timestamp}"
+        run_root = os.path.join("outputs", "runs", run_name)
+
+    if scenario is not None and task_id is not None:
+        output_dir = os.path.join(run_root, normalize_scenario_name(scenario), f"task_{task_id}")
+    else:
+        output_dir = os.path.join(run_root, f"manual_task_{timestamp}")
+
+    return output_dir, run_root
 
 
 def get_system_prompt() -> str:
@@ -417,13 +449,7 @@ async def run_agent(config: Config):
     use_vllm_extras = "localhost" in api_url and "openai.azure.com" not in api_url and "v1" in api_url
     # Prepare output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if config.output_dir:
-        output_dir = config.output_dir
-    else:
-        run_name = f"{timestamp}"
-        if scenario:
-            run_name = f"{timestamp}_{scenario}_task_{task_id}"
-        output_dir = os.path.join("outputs", "agents", run_name)
+    output_dir, run_root = resolve_output_dir(config, scenario, task_id, model, timestamp)
     os.makedirs(output_dir, exist_ok=True)
 
     # Setup database and MCP server if scenario is provided
@@ -465,6 +491,7 @@ async def run_agent(config: Config):
         logger.info(f"MCP Server: {mcp_url}")
         logger.info(f"LLM API: {api_url}")
         logger.info(f"Model: {model}")
+        logger.info(f"Run root: {run_root}")
         logger.info(f"Output: {output_dir}")
         logger.info("=" * 80)
 
@@ -595,8 +622,11 @@ async def run_agent(config: Config):
         # Save final database
         if db_file_path and os.path.exists(db_file_path):
             final_db_path = os.path.join(output_dir, "final.db")
-            shutil.copy2(db_file_path, final_db_path)
-            logger.info(f"Saved final database to {final_db_path}")
+            if os.path.abspath(db_file_path) != os.path.abspath(final_db_path):
+                shutil.copy2(db_file_path, final_db_path)
+                logger.info(f"Saved final database to {final_db_path}")
+            else:
+                logger.info(f"Final database already at {final_db_path}")
 
         logger.info(f"Run outputs saved to: {output_dir}")
 
