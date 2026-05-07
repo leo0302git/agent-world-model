@@ -374,7 +374,13 @@ kill -TERM "$(cat /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25
   /data1/jczhong/repos/agent-world-model/scripts/monitor_run.py \
   /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen36_27b_full \
   --watch \
-  --interval 30
+  --interval 1
+
+  /data1/jczhong/repos/agent-world-model/.venv/bin/python \
+  /data1/jczhong/repos/agent-world-model/scripts/monitor_run.py \
+  /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25_7b_full \
+  --watch \
+  --interval 1
 ```
 
 该脚本只读扫描 run 目录，不写任何文件。
