@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -44,6 +45,31 @@ from mcp_agent.config import Settings, MCPSettings, MCPServerSettings, LoggerSet
 
 logger.disable("mcp_agent")
 logger.disable("mcp")
+
+
+def terminate_server_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Terminate an MCP server wrapper and every child in its process group."""
+    if proc.poll() is not None:
+        return
+
+    try:
+        pgid = os.getpgid(proc.pid)
+    except ProcessLookupError:
+        return
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
 
 
 @dataclass
@@ -636,12 +662,7 @@ async def run_agent(config: Config):
         # Cleanup MCP server
         if server_proc and server_proc.poll() is None:
             logger.info("Shutting down MCP server...")
-            server_proc.terminate()
-            try:
-                server_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                server_proc.kill()
-                server_proc.wait()
+            terminate_server_process(server_proc)
 
 
 def run(config: Config):

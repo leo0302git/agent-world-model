@@ -157,10 +157,18 @@ def run_server(config: Config):
     os.environ['PORT'] = str(config.port)
     os.environ['DATABASE_PATH'] = f"sqlite:///{db_path}"
 
-    # Run server and capture log
+    # Run server and capture log. Avoid a shell pipeline here so the caller can
+    # terminate the whole process group without leaving tee/server children.
     log_path = os.path.join(output_dir, "server.log")
     logger.info(f"Server log will be saved to {log_path}")
-    ret = os.system(f"{sys.executable} {server_code_path} 2>&1 | tee {log_path}")
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, server_code_path],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        ret = proc.wait()
 
     # After server exits, save final DB snapshot
     final_db_path = os.path.join(output_dir, "final.db")
@@ -192,7 +200,12 @@ def start_server_process(
     if output_dir:
         cmd.extend(["--output_dir", output_dir])
     logger.info(f"Starting MCP server: {' '.join(cmd)}")
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
 
 
 def run(config: Config):
