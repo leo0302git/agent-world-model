@@ -495,10 +495,6 @@ async def run_verify(config: Config):
     tools_json_save(output, output_path)
     logger.info(f"Saved verification result to {output_path}")
 
-    run_root = infer_run_root(run_dir)
-    if run_root:
-        refresh_run_summary(run_root)
-
     return output
 
 

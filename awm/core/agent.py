@@ -56,6 +56,8 @@ class Config:
     task_id: int | None = None
     # MCP server URL (streamable HTTP transport). Auto-started if --scenario is provided.
     mcp_url: str | None = None
+    # MCP server port to use when auto-starting a scenario server. If unset, a random free port is used.
+    mcp_port: int | None = None
     # OpenAI-compatible API URL (also supports Azure OpenAI via env vars)
     api_url: str | None = None
     # Model name
@@ -467,7 +469,7 @@ async def run_agent(config: Config):
         db_file_path = _prepare_database(server_cfg, output_dir)
 
         # Start MCP server
-        port = get_random_available_port()
+        port = config.mcp_port if config.mcp_port is not None else get_random_available_port()
         server_proc = start_server_process(scenario, config.envs_path, db_file_path, port, output_dir=output_dir)
         mcp_url = f"http://127.0.0.1:{port}/mcp"
 
