@@ -59,6 +59,10 @@ class RunnerConfig:
     max_iterations: int
     max_tokens: int
     temperature: float
+    judge_api_url: str | None
+    judge_api_key: str | None
+    judge_model: str | None
+    judge_provider: str | None
     resume: bool
     verbose: bool
     run_root: Path
@@ -149,6 +153,9 @@ def write_manifest(config: RunnerConfig, tasks: list[TaskItem]) -> None:
         "scenario_limit": config.scenario_limit,
         "task_ids": config.task_ids,
         "verify_mode": config.verify_mode,
+        "judge_api_url": config.judge_api_url,
+        "judge_model": config.judge_model,
+        "judge_provider": config.judge_provider,
         "tasks": [asdict(task) for task in tasks],
     }
     with (config.run_root / "manifest.json").open("w", encoding="utf-8") as f:
@@ -308,7 +315,18 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
     else:
         verify_cmd.extend(["--verifier_path", str(config.data / "gen_verifier.jsonl")])
 
-    verify_rc = run_command(verify_cmd, env, output_dir / "runner_verify.log")
+    verify_env = env.copy()
+    if config.verify_mode == "sql":
+        if config.judge_api_url:
+            verify_env["OPENAI_BASE_URL"] = config.judge_api_url
+        if config.judge_api_key:
+            verify_env["OPENAI_API_KEY"] = config.judge_api_key
+        if config.judge_model:
+            verify_env["AWM_SYN_OVERRIDE_MODEL"] = config.judge_model
+        if config.judge_provider:
+            verify_env["AWM_SYN_LLM_PROVIDER"] = config.judge_provider
+
+    verify_rc = run_command(verify_cmd, verify_env, output_dir / "runner_verify.log")
     if verify_rc != 0:
         return {"status": "verify_failed", "returncode": verify_rc, "task": asdict(task), "port": port}
 
@@ -415,7 +433,7 @@ def run_parallel(config: RunnerConfig) -> dict:
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--data", type=Path, default=Path("/data1/jczhong/datasets/AgentWorldModel-1K"))
     parser.add_argument("--api-url", required=True)
-    parser.add_argument("--api-key", default="EMPTY")
+    parser.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "EMPTY"))
     parser.add_argument("--model", required=True)
     parser.add_argument("--run-name")
     parser.add_argument("--workers", type=int, default=2)
@@ -427,6 +445,10 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--judge-api-url")
+    parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY"))
+    parser.add_argument("--judge-model")
+    parser.add_argument("--judge-provider")
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
 
@@ -449,6 +471,10 @@ def config_from_args(args: argparse.Namespace, prefix: str) -> RunnerConfig:
         max_iterations=args.max_iterations,
         max_tokens=args.max_tokens,
         temperature=args.temperature,
+        judge_api_url=args.judge_api_url,
+        judge_api_key=args.judge_api_key,
+        judge_model=args.judge_model,
+        judge_provider=args.judge_provider,
         resume=args.resume,
         verbose=args.verbose,
         run_root=run_root,

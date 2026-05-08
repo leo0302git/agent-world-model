@@ -381,6 +381,12 @@ kill -TERM "$(cat /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25
   /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25_7b_full \
   --watch \
   --interval 1
+
+    /data1/jczhong/repos/agent-world-model/.venv/bin/python \
+  /data1/jczhong/repos/agent-world-model/scripts/monitor_run.py \
+  /data1/jczhong/repos/agent-world-model/outputs/runs/awm_prompt_v2_dmxapi_w4_100 \
+  --watch \
+  --interval 1
 ```
 
 该脚本只读扫描 run 目录，不写任何文件。
@@ -408,22 +414,26 @@ nvidia-smi
 如果使用远端 OpenAI-compatible API，不需要启动 SGLang：
 
 ```bash
-/data1/jczhong/repos/agent-world-model/.venv/bin/python \
-  /data1/jczhong/repos/agent-world-model/scripts/run_parallel_api_score.py \
-  --data /data1/jczhong/datasets/AgentWorldModel-1K \
-  --api-url https://newapi2.frontis.top/v1 \
-  --api-key "$OPENAI_API_KEY" \
-  --model qwen3.5-397b-a17b \
-  --workers 4 \
-  --base-port 9100 \
-  --port-stride 100 \
-  --scenario-limit 2 \
-  --task-ids 0-2 \
-  --verify-mode code \
-  --max-iterations 30 \
-  --max-tokens 4096 \
-  --temperature 0.7 \
-  --run-name awm_api_qwen397b_smoke
+  nohup /data1/jczhong/repos/agent-world-model/.venv/bin/python \
+    /data1/jczhong/repos/agent-world-model/scripts/run_parallel_api_score.py \
+    --data /data1/jczhong/datasets/AgentWorldModel-1K \
+    --api-url https://www.dmxapi.cn/v1 \
+    --api-key "$OPENAI_API_KEY" \
+    --model gpt-5.5 \
+    --workers 4 \
+    --base-port 17000 \
+    --port-stride 100 \
+    --scenario-limit 50 \
+    --task-ids 0-1 \
+    --verify-mode code \
+    --max-iterations 20 \
+    --max-tokens 4096 \
+    --temperature 0.6 \
+    --run-name awm_dmxapi_stage1_w4_100 \
+    > /data1/jczhong/repos/agent-world-model/outputs/runs/awm_dmxapi_stage1_w4_100.nohup.log 2>&1 < /dev/null &
+
+  echo $! > /data1/jczhong/repos/agent-world-model/outputs/runs/awm_dmxapi_stage1_w4_100.pid
+
 ```
 
 远端 API 跑分仍然会为每个 task 本地启动 MCP server，因此仍需要 `--base-port` 和 `--port-stride`。
