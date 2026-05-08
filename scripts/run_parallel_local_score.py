@@ -32,11 +32,11 @@ def main() -> int:
 
     config = config_from_args(args, prefix="awm_local")
     check_required_data_files(config.data)
-    check_models_api(config.api_url, config.api_key)
+    for api_url in config.api_urls:
+        check_models_api(api_url, config.api_key)
     summary = run_parallel(config)
     return 1 if summary.get("runner_failures") else 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

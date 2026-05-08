@@ -207,13 +207,11 @@ def get_system_prompt() -> str:
         </tool_call>""")
 
 
-def append_skill_to_list_tools_response(response_text: str, skill: str | None) -> tuple[str, bool]:
+def build_skill_system_prompt(skill: str | None) -> str | None:
     if not skill:
-        return response_text, False
+        return None
 
-    skill_block = dedent(f"""\
-
-
+    return dedent(f"""\
         # Scenario Skill
 
         Use the following scenario-specific skill as a planning hint after inspecting the live tools above. You must still use exact tool names and argument schemas from the live tool list. Do not call a tool solely because it appears in the skill. Prefer the user task and live tool results over the skill if they differ.
@@ -221,7 +219,6 @@ def append_skill_to_list_tools_response(response_text: str, skill: str | None) -
         <scenario_skill>
         {skill}
         </scenario_skill>""")
-    return response_text.rstrip() + skill_block, True
 
 
 def parse_tool_calls(content: str) -> list[dict]:
@@ -629,10 +626,7 @@ async def run_agent(config: Config):
             # execute tool call
             if name == "list_tools":
                 logger.info("Executing: list_tools")
-                response_text, injected_now = append_skill_to_list_tools_response(tools_response_text, skill)
-                skill_injected = skill_injected or injected_now
-                if injected_now:
-                    logger.info("Injected scenario skill after list_tools response")
+                response_text = tools_response_text
 
             elif name == "call_tool":
                 tool_name, tool_args = parse_call_tool_arguments(arguments)
@@ -658,6 +652,18 @@ async def run_agent(config: Config):
                 "content": response_text,
             })
 
+            injected_now = False
+            if name == "list_tools":
+                skill_system_prompt = build_skill_system_prompt(skill)
+                if skill_system_prompt:
+                    messages.append({
+                        "role": "system",
+                        "content": skill_system_prompt,
+                    })
+                    skill_injected = True
+                    injected_now = True
+                    logger.info("Injected scenario skill as system message after list_tools response")
+
             # Record trajectory entry
             trajectory.append({
                 "iteration": iteration,
@@ -668,6 +674,7 @@ async def run_agent(config: Config):
                     "tool_call_id": tool_call_id,
                     "content": response_text,
                 },
+                "skill_system_injected_after_tool": injected_now,
             })
         else:
             logger.warning("Max iterations reached without completion.")
@@ -688,7 +695,7 @@ async def run_agent(config: Config):
             "skill_dir": config.skill_dir,
             "skill_path": skill_path,
             "skill_injected": skill_injected,
-            "skill_injection_position": "after_list_tools" if skill_injected else None,
+            "skill_injection_position": "system_after_list_tools" if skill_injected else None,
             "total_iterations": iteration,
             "timestamp": timestamp,
             "trajectory": trajectory,

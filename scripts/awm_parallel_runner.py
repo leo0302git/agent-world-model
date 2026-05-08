@@ -47,6 +47,7 @@ class TaskItem:
 class RunnerConfig:
     data: Path
     api_url: str
+    api_urls: list[str]
     api_key: str
     model: str
     run_name: str
@@ -147,6 +148,7 @@ def write_manifest(config: RunnerConfig, tasks: list[TaskItem]) -> None:
         "run_root": str(config.run_root),
         "data": str(config.data),
         "api_url": config.api_url,
+        "api_urls": config.api_urls,
         "model": config.model,
         "workers": config.workers,
         "base_port": config.base_port,
@@ -257,8 +259,9 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
 
     output_dir = Path(task.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    api_url = config.api_urls[task.worker_id % len(config.api_urls)]
     env = os.environ.copy()
-    env["OPENAI_BASE_URL"] = config.api_url
+    env["OPENAI_BASE_URL"] = api_url
     env["OPENAI_API_KEY"] = config.api_key
     env["AWM_RUN_NAME"] = config.run_name
     env["AWM_SYN_OVERRIDE_MODEL"] = config.model
@@ -282,7 +285,7 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
         "--sample_path",
         str(config.data / "gen_sample.jsonl"),
         "--api_url",
-        config.api_url,
+        api_url,
         "--model",
         config.model,
         "--run_root",
@@ -392,7 +395,10 @@ def run_parallel(config: RunnerConfig) -> dict:
     tasks = build_manifest(config)
     write_manifest(config, tasks)
     print(f"run_root={config.run_root}")
-    print(f"tasks={len(tasks)} workers={config.workers} verify_mode={config.verify_mode}")
+    print(
+        f"tasks={len(tasks)} workers={config.workers} "
+        f"endpoints={len(config.api_urls)} verify_mode={config.verify_mode}"
+    )
 
     statuses: Counter[str] = Counter()
     failures: list[dict] = []
@@ -462,9 +468,13 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def config_from_args(args: argparse.Namespace, prefix: str) -> RunnerConfig:
     run_name = args.run_name or default_run_name(prefix, args.model)
     run_root = REPO_ROOT / "outputs" / "runs" / run_name
+    api_urls = [url.strip().rstrip("/") for url in args.api_url.split(",") if url.strip()]
+    if not api_urls:
+        raise ValueError("--api-url must contain at least one endpoint")
     return RunnerConfig(
         data=args.data,
-        api_url=args.api_url.rstrip("/"),
+        api_url=api_urls[0],
+        api_urls=api_urls,
         api_key=args.api_key,
         model=args.model,
         run_name=run_name,
