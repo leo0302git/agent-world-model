@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 
 VALID_REWARD_TYPES = {
@@ -57,6 +58,7 @@ class RunnerConfig:
     port_stride: int
     scenario_limit: int | None
     task_ids: list[int]
+    task_allowlist_jsonl: Path | None
     verify_mode: str
     max_iterations: int
     max_tokens: int
@@ -66,6 +68,7 @@ class RunnerConfig:
     judge_model: str | None
     judge_provider: str | None
     skill_dir: Path | None
+    skill_reminder_interval: int
     resume: bool
     verbose: bool
     run_root: Path
@@ -129,31 +132,76 @@ def load_scenarios(tasks_path: Path, scenario_limit: int | None) -> list[tuple[s
     return scenarios
 
 
+def load_task_allowlist(path: Path, tasks_path: Path) -> list[tuple[str, str, int]]:
+    task_rows: dict[str, dict] = {}
+    with tasks_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            scenario = str(row.get("scenario", ""))
+            scenario_dir = normalize_scenario_name(scenario)
+            if scenario_dir:
+                task_rows[scenario_dir] = row
+
+    selected: list[tuple[str, str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            raw_scenario = str(row.get("scenario") or row.get("scenario_dir") or "")
+            scenario_dir = normalize_scenario_name(raw_scenario)
+            task_id = int(row["task_id"])
+            key = (scenario_dir, task_id)
+            if key in seen:
+                continue
+            source = task_rows.get(scenario_dir)
+            if source is None:
+                raise ValueError(f"{path}:{line_no}: unknown scenario {raw_scenario!r}")
+            tasks = source.get("tasks") or []
+            if task_id < 0 or task_id >= len(tasks):
+                raise ValueError(f"{path}:{line_no}: invalid task_id {task_id} for {scenario_dir}")
+            selected.append((str(source.get("scenario", raw_scenario)), scenario_dir, task_id))
+            seen.add(key)
+    if not selected:
+        raise ValueError(f"no tasks loaded from allowlist {path}")
+    return selected
+
+
 def build_manifest(config: RunnerConfig) -> list[TaskItem]:
-    scenarios = load_scenarios(config.data / "gen_tasks.jsonl", config.scenario_limit)
     tasks: list[TaskItem] = []
     global_idx = 0
-    for scenario, task_count in scenarios:
-        scenario_dir = normalize_scenario_name(scenario)
-        for task_id in config.task_ids:
-            if task_id < 0 or task_id >= task_count:
-                continue
-            worker_id = global_idx % config.workers
-            worker_port_start = config.base_port + worker_id * config.port_stride
-            preferred_port = worker_port_start + (global_idx // config.workers) % config.port_stride
-            output_dir = config.run_root / scenario_dir / f"task_{task_id}"
-            tasks.append(
-                TaskItem(
-                    global_idx=global_idx,
-                    worker_id=worker_id,
-                    scenario=scenario,
-                    scenario_dir=scenario_dir,
-                    task_id=task_id,
-                    output_dir=str(output_dir),
-                    preferred_port=preferred_port,
-                )
+    if config.task_allowlist_jsonl:
+        selected_tasks = load_task_allowlist(config.task_allowlist_jsonl, config.data / "gen_tasks.jsonl")
+    else:
+        scenarios = load_scenarios(config.data / "gen_tasks.jsonl", config.scenario_limit)
+        selected_tasks = []
+        for scenario, task_count in scenarios:
+            scenario_dir = normalize_scenario_name(scenario)
+            for task_id in config.task_ids:
+                if task_id < 0 or task_id >= task_count:
+                    continue
+                selected_tasks.append((scenario, scenario_dir, task_id))
+
+    for scenario, scenario_dir, task_id in selected_tasks:
+        worker_id = global_idx % config.workers
+        worker_port_start = config.base_port + worker_id * config.port_stride
+        preferred_port = worker_port_start + (global_idx // config.workers) % config.port_stride
+        output_dir = config.run_root / scenario_dir / f"task_{task_id}"
+        tasks.append(
+            TaskItem(
+                global_idx=global_idx,
+                worker_id=worker_id,
+                scenario=scenario,
+                scenario_dir=scenario_dir,
+                task_id=task_id,
+                output_dir=str(output_dir),
+                preferred_port=preferred_port,
             )
-            global_idx += 1
+        )
+        global_idx += 1
     return tasks
 
 
@@ -171,11 +219,13 @@ def write_manifest(config: RunnerConfig, tasks: list[TaskItem]) -> None:
         "port_stride": config.port_stride,
         "scenario_limit": config.scenario_limit,
         "task_ids": config.task_ids,
+        "task_allowlist_jsonl": str(config.task_allowlist_jsonl) if config.task_allowlist_jsonl else None,
         "verify_mode": config.verify_mode,
         "judge_api_url": config.judge_api_url,
         "judge_model": config.judge_model,
         "judge_provider": config.judge_provider,
         "skill_dir": str(config.skill_dir) if config.skill_dir else None,
+        "skill_reminder_interval": config.skill_reminder_interval,
         "tasks": [asdict(task) for task in tasks],
     }
     with (config.run_root / "manifest.json").open("w", encoding="utf-8") as f:
@@ -203,6 +253,28 @@ def choose_port(task: TaskItem, config: RunnerConfig) -> int:
         if is_port_available(port):
             return port
     raise RuntimeError(f"no free MCP port in worker {task.worker_id} range {start}-{end - 1}")
+
+
+def disable_proxy_for_local_api(env: dict[str, str], api_url: str) -> None:
+    host = urlparse(api_url).hostname
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        env.pop(key, None)
+    no_proxy = env.get("NO_PROXY") or env.get("no_proxy") or ""
+    entries = [entry.strip() for entry in no_proxy.split(",") if entry.strip()]
+    for entry in ("127.0.0.1", "localhost", "::1"):
+        if entry not in entries:
+            entries.append(entry)
+    env["NO_PROXY"] = ",".join(entries)
+    env["no_proxy"] = env["NO_PROXY"]
 
 
 def verify_path_for(task: TaskItem, mode: str) -> Path:
@@ -281,6 +353,7 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
     env["OPENAI_API_KEY"] = config.api_key
     env["AWM_RUN_NAME"] = config.run_name
     env["AWM_SYN_OVERRIDE_MODEL"] = config.model
+    disable_proxy_for_local_api(env, api_url)
 
     port = choose_port(task, config)
     agent_cmd = [
@@ -319,6 +392,7 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
     ]
     if config.skill_dir:
         agent_cmd.extend(["--skill_dir", str(config.skill_dir)])
+    agent_cmd.extend(["--skill_reminder_interval", str(config.skill_reminder_interval)])
 
     agent_rc = run_command(agent_cmd, env, output_dir / "runner_agent.log")
     if agent_rc != 0:
@@ -475,6 +549,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--port-stride", type=int, default=100)
     parser.add_argument("--scenario-limit", type=int)
     parser.add_argument("--task-ids", type=parse_task_ids, default=parse_task_ids("0-9"))
+    parser.add_argument("--task-allowlist-jsonl", type=Path,
+                        help="Run exactly the scenario/task_id pairs listed in a JSONL allowlist.")
     parser.add_argument("--verify-mode", choices=["code", "sql"], default="code")
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument("--max-tokens", type=int, default=4096)
@@ -484,6 +560,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-provider")
     parser.add_argument("--skill-dir", type=Path)
+    parser.add_argument("--skill-reminder-interval", type=int, default=4)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
 
@@ -506,6 +583,7 @@ def config_from_args(args: argparse.Namespace, prefix: str) -> RunnerConfig:
         port_stride=args.port_stride,
         scenario_limit=args.scenario_limit,
         task_ids=args.task_ids,
+        task_allowlist_jsonl=args.task_allowlist_jsonl,
         verify_mode=args.verify_mode,
         max_iterations=args.max_iterations,
         max_tokens=args.max_tokens,
@@ -515,6 +593,7 @@ def config_from_args(args: argparse.Namespace, prefix: str) -> RunnerConfig:
         judge_model=args.judge_model,
         judge_provider=args.judge_provider,
         skill_dir=args.skill_dir,
+        skill_reminder_interval=args.skill_reminder_interval,
         resume=args.resume,
         verbose=args.verbose,
         run_root=run_root,

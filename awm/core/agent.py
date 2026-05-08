@@ -47,6 +47,9 @@ logger.disable("mcp_agent")
 logger.disable("mcp")
 
 
+LIST_TOOLS_FORMAT = "names_descriptions_only"
+
+
 def terminate_server_process(proc: subprocess.Popen, timeout: float = 5.0) -> None:
     """Terminate an MCP server wrapper and every child in its process group."""
     if proc.poll() is not None:
@@ -104,6 +107,8 @@ class Config:
     # Directory containing per-scenario skill.md files, e.g. by_scenario/<scenario>/skill.md.
     # Missing skill files are ignored and the agent runs without skill injection.
     skill_dir: str | None = None
+    # Re-inject the scenario skill every N tool-use iterations. Set to 0 to disable reminders.
+    skill_reminder_interval: int = 4
     # Path to generated environments file
     envs_path: str = "./outputs/gen_envs.jsonl"
     # Path to generated tasks file
@@ -170,9 +175,15 @@ def get_system_prompt() -> str:
         1. list_tools
             - Description: List all available MCP tools for the current environment to help you finish the user task.
             - Arguments: None
-            - Output: A list of MCP environment-specific tools and their descriptions
+            - Output: A compact list of MCP environment-specific tool names and descriptions. It does not include argument schemas.
 
-        2. call_tool
+        2. tool_help
+            - Description: Get the argument schema and response examples for one MCP environment-specific tool.
+            - Arguments:
+                - tool_name: str, required, the exact tool name in the list_tools output
+            - Output: Detailed documentation for that one tool, including arguments and response examples when available.
+
+        3. call_tool
             - Description: Call a MCP environment-specific tool
             - Arguments:
                 - tool_name: str, required, the tool name in the list_tools output
@@ -184,12 +195,16 @@ def get_system_prompt() -> str:
 
         You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
 
-        You are provided with TWO functions within <tools></tools> XML tags:
+        You are provided with THREE functions within <tools></tools> XML tags:
         <tools>
         {tools_str}
         </tools>
 
-        You should always call list_tools function first to get the available tools, and should only call it once. You should always directly output the answer or summary at the final step instead of calling any function.
+        You should always call list_tools function first to get the available tools. You may call list_tools again later if you need to refresh available tool names or recover from uncertainty. Avoid calling list_tools repeatedly without a clear reason.
+
+        Before the first use of any MCP environment tool with non-empty arguments, call tool_help for that exact tool to inspect its required arguments and response shape. If a tool call fails due to missing, invalid, or mismatched arguments, call tool_help for that tool before retrying. If several turns have passed and you need exact arguments again, call tool_help again rather than guessing.
+
+        At each step, return at most one function call. If a task needs multiple tool calls, call them sequentially across turns after observing each tool result. You should always directly output the answer or summary at the final step instead of calling any function.
 
         For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
         <tool_call>
@@ -203,18 +218,24 @@ def get_system_prompt() -> str:
 
         Example Function Call #2:
         <tool_call>
+        {{"name": "tool_help", "arguments": {{"tool_name": "mcp_tool_mcp_server_get_weather"}}}}
+        </tool_call>
+
+        Example Function Call #3:
+        <tool_call>
         {{"name": "call_tool", "arguments": {{"tool_name": "get_weather", "arguments": "{{"city": "Beijing"}}"}}}}
         </tool_call>""")
 
 
-def build_skill_system_prompt(skill: str | None) -> str | None:
+def build_skill_system_prompt(skill: str | None, *, reminder: bool = False) -> str | None:
     if not skill:
         return None
 
+    title = "Scenario Skill Reminder" if reminder else "Scenario Skill"
     return dedent(f"""\
-        # Scenario Skill
+        # {title}
 
-        Use the following scenario-specific skill as a planning hint after inspecting the live tools above. You must still use exact tool names and argument schemas from the live tool list. Do not call a tool solely because it appears in the skill. Prefer the user task and live tool results over the skill if they differ.
+        Treat the following scenario-specific skill as a strong operating prior for this scenario. Use it to decide search strategy, ID resolution patterns, safe update order, state checks, and final verification. Live user instructions, live tool schemas, and live tool results override the skill when they conflict. Do not call a tool solely because it appears in the skill.
 
         <scenario_skill>
         {skill}
@@ -286,57 +307,102 @@ def parse_call_tool_arguments(arguments: dict | str | None) -> tuple[str, dict]:
     return tool_name, inner_args
 
 
+def parse_tool_help_arguments(arguments: dict | str | None) -> str:
+    if isinstance(arguments, str):
+        arguments = tools_robust_json_loads(arguments)
+    if not isinstance(arguments, dict):
+        return ""
+    return str(arguments.get("tool_name", "")).strip()
+
+
+def normalize_tool_name(tool_name: str) -> str:
+    tool_name = tool_name.strip()
+    if tool_name.startswith("mcp_tool_"):
+        tool_name = tool_name[len("mcp_tool_"):]
+    return tool_name
+
+
+def display_tool_name(tool_name: str) -> str:
+    return tool_name if tool_name.startswith("mcp_tool_") else f"mcp_tool_{tool_name}"
+
+
+def compact_tool_description(description: str) -> str:
+    stop_prefixes = (
+        "### Responses",
+        "## Responses",
+        "**200**",
+        "**201**",
+        "**400**",
+        "**401**",
+        "**403**",
+        "**404**",
+        "**422**",
+        "Content-Type:",
+        "**Example Response:**",
+        "Example Response:",
+        "Example:",
+        "```",
+    )
+    kept: list[str] = []
+    for raw_line in description.splitlines():
+        line = raw_line.strip()
+        if any(line.startswith(prefix) for prefix in stop_prefixes):
+            break
+        if line:
+            kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def format_input_schema(schema: dict, indent_level: int = 6, parent_required: list | None = None) -> str:
+    if not schema:
+        return ""
+
+    result = ""
+    indent_str = " " * indent_level
+    properties = schema.get('properties', {})
+    required_fields = parent_required if parent_required is not None else schema.get('required', [])
+
+    for prop_name, prop_info in properties.items():
+        is_required = prop_name in required_fields
+        required_str = " (required)" if is_required else " (optional)"
+        prop_type = prop_info.get('type', 'unknown')
+        description = prop_info.get('description', '')
+        default = prop_info.get('default')
+        enum_values = prop_info.get('enum')
+        nested_properties = prop_info.get('properties', {})
+        nested_required = prop_info.get('required', [])
+
+        result += f"{indent_str}- {prop_name}: {prop_type}{required_str}\n"
+        if description:
+            result += f"{indent_str}  Description: {description}\n"
+        if default is not None:
+            result += f"{indent_str}  Default: {default}\n"
+        if enum_values:
+            result += f"{indent_str}  Allowed values: {enum_values}\n"
+
+        if prop_type == "object" and nested_properties:
+            result += f"{indent_str}  Properties:\n"
+            nested_schema = {"properties": nested_properties, "required": nested_required}
+            result += format_input_schema(nested_schema, indent_level + 4, nested_required)
+
+    return result
+
+
+def environment_tools(tools: list[dict]) -> list[dict]:
+    return [t for t in tools if normalize_tool_name(str(t.get("name", ""))) not in {"list_tools", "tool_help"}]
+
+
 def format_tools_for_response(tools: list[dict]) -> str:
-
-    def format_input_schema(schema: dict, indent_level: int = 6, parent_required: list | None = None) -> str:
-        if not schema:
-            return ""
-
-        result = ""
-        indent_str = " " * indent_level
-        properties = schema.get('properties', {})
-        required_fields = parent_required if parent_required is not None else schema.get('required', [])
-
-        for prop_name, prop_info in properties.items():
-            is_required = prop_name in required_fields
-            required_str = " (required)" if is_required else " (optional)"
-            prop_type = prop_info.get('type', 'unknown')
-            description = prop_info.get('description', '')
-            default = prop_info.get('default')
-            enum_values = prop_info.get('enum')
-            nested_properties = prop_info.get('properties', {})
-            nested_required = prop_info.get('required', [])
-
-            result += f"{indent_str}- {prop_name}: {prop_type}{required_str}\n"
-            if description:
-                result += f"{indent_str}  Description: {description}\n"
-            if default is not None:
-                result += f"{indent_str}  Default: {default}\n"
-            if enum_values:
-                result += f"{indent_str}  Allowed values: {enum_values}\n"
-
-            if prop_type == "object" and nested_properties:
-                result += f"{indent_str}  Properties:\n"
-                nested_schema = {"properties": nested_properties, "required": nested_required}
-                result += format_input_schema(nested_schema, indent_level + 4, nested_required)
-
-        return result
-
-    # filter out list_tools meta-tool
-    actual_tools = [t for t in tools if t.get('name') != 'list_tools']
+    actual_tools = environment_tools(tools)
 
     docs_text = f"Available MCP Tools ({len(actual_tools)} tools):\n"
     docs_text += "=" * 80 + "\n\n"
 
     for i, tool in enumerate(actual_tools, 1):
         name = tool.get("name", "")
-        description = tool.get("description", "")
-        input_schema = tool.get("inputSchema", tool.get("input_schema", {}))
+        description = compact_tool_description(tool.get("description", ""))
+        mcp_name = display_tool_name(name)
 
-        # add mcp_tool_ prefix
-        mcp_name = f"mcp_tool_{name}" if not name.startswith("mcp_tool_") else name
-
-        # parse description for multi-line
         desc_lines = description.split('\n')
         first_line = desc_lines[0].strip() if desc_lines else "No description"
         more_desc = '\n'.join(line.strip() for line in desc_lines[1:]).strip() if len(desc_lines) > 1 else ""
@@ -348,15 +414,42 @@ def format_tools_for_response(tools: list[dict]) -> str:
                 if line.strip():
                     docs_text += f"   {line}\n"
 
-        if input_schema and input_schema.get('properties'):
-            docs_text += f"   Parameters:\n"
-            docs_text += format_input_schema(input_schema)
-        else:
-            docs_text += f"   Parameters: None\n"
-
         docs_text += "\n"
 
     return docs_text.strip()
+
+
+def find_tool(tools: list[dict], requested_tool_name: str) -> dict | None:
+    requested = normalize_tool_name(requested_tool_name)
+    for tool in environment_tools(tools):
+        if normalize_tool_name(str(tool.get("name", ""))) == requested:
+            return tool
+    return None
+
+
+def format_single_tool_help(tools: list[dict], requested_tool_name: str) -> tuple[str, str | None]:
+    tool = find_tool(tools, requested_tool_name)
+    if tool is None:
+        available = ", ".join(display_tool_name(str(t.get("name", ""))) for t in environment_tools(tools))
+        return (
+            f"Error: Unknown tool '{requested_tool_name}'. Available tools: {available}",
+            None,
+        )
+
+    name = str(tool.get("name", ""))
+    mcp_name = display_tool_name(name)
+    description = str(tool.get("description", "")).strip() or "No description"
+    input_schema = tool.get("inputSchema", tool.get("input_schema", {}))
+
+    docs_text = f"Tool Help: {mcp_name}\n"
+    docs_text += "=" * 80 + "\n"
+    docs_text += f"Description:\n{description}\n\n"
+    if input_schema and input_schema.get("properties"):
+        docs_text += "Parameters:\n"
+        docs_text += format_input_schema(input_schema)
+    else:
+        docs_text += "Parameters: None\n"
+    return docs_text.strip(), mcp_name
 
 
 MCP_SERVER_NAME = "mcp_server"
@@ -576,9 +669,22 @@ async def run_agent(config: Config):
 
         messages: list[dict] = [
             {"role": "system", "content": get_system_prompt()},
-            {"role": "user", "content": task},
         ]
         skill_injected = False
+        skill_injected_iterations: list[int] = []
+        skill_reminder_count = 0
+        skill_system_prompt = build_skill_system_prompt(skill)
+        if skill_system_prompt:
+            messages.append({"role": "system", "content": skill_system_prompt})
+            skill_injected = True
+            skill_injected_iterations.append(0)
+            logger.info("Injected scenario skill as initial system message")
+        messages.append({"role": "user", "content": task})
+        list_tools_calls = 0
+        tool_help_calls = 0
+        helped_tools: list[str] = []
+        helped_tool_set: set[str] = set()
+        tool_calls_without_prior_help: list[str] = []
 
         # Trajectory recording
         trajectory: list[dict] = []
@@ -626,10 +732,23 @@ async def run_agent(config: Config):
             # execute tool call
             if name == "list_tools":
                 logger.info("Executing: list_tools")
+                list_tools_calls += 1
                 response_text = tools_response_text
+
+            elif name == "tool_help":
+                requested_tool_name = parse_tool_help_arguments(arguments)
+                logger.info(f"Executing: tool_help({requested_tool_name})")
+                response_text, helped_tool = format_single_tool_help(tools, requested_tool_name)
+                tool_help_calls += 1
+                if helped_tool and helped_tool not in helped_tool_set:
+                    helped_tool_set.add(helped_tool)
+                    helped_tools.append(helped_tool)
 
             elif name == "call_tool":
                 tool_name, tool_args = parse_call_tool_arguments(arguments)
+                display_name = display_tool_name(tool_name)
+                if tool_args and display_name not in helped_tool_set and display_name not in tool_calls_without_prior_help:
+                    tool_calls_without_prior_help.append(display_name)
                 logger.info(f"Executing: call_tool({tool_name}, {json.dumps(tool_args, ensure_ascii=False)[:200]})")
                 try:
                     response_text = await mcp.call_tool(tool_name, tool_args)
@@ -640,7 +759,7 @@ async def run_agent(config: Config):
                     response_text = f"Error: {e}"
                     logger.error(f"Tool call failed: {e}")
             else:
-                response_text = f"Error: Unknown tool '{name}'. Only 'list_tools' and 'call_tool' are available."
+                response_text = f"Error: Unknown tool '{name}'. Only 'list_tools', 'tool_help', and 'call_tool' are available."
 
             if config.verbose:
                 preview = response_text[:500] + "..." if len(response_text) > 500 else response_text
@@ -652,17 +771,22 @@ async def run_agent(config: Config):
                 "content": response_text,
             })
 
-            injected_now = False
-            if name == "list_tools":
-                skill_system_prompt = build_skill_system_prompt(skill)
-                if skill_system_prompt:
+            reminder_injected_now = False
+            if (
+                skill
+                and config.skill_reminder_interval > 0
+                and iteration % config.skill_reminder_interval == 0
+            ):
+                reminder_prompt = build_skill_system_prompt(skill, reminder=True)
+                if reminder_prompt:
                     messages.append({
                         "role": "system",
-                        "content": skill_system_prompt,
+                        "content": reminder_prompt,
                     })
-                    skill_injected = True
-                    injected_now = True
-                    logger.info("Injected scenario skill as system message after list_tools response")
+                    reminder_injected_now = True
+                    skill_reminder_count += 1
+                    skill_injected_iterations.append(iteration)
+                    logger.info(f"Injected scenario skill reminder after iteration {iteration}")
 
             # Record trajectory entry
             trajectory.append({
@@ -674,7 +798,7 @@ async def run_agent(config: Config):
                     "tool_call_id": tool_call_id,
                     "content": response_text,
                 },
-                "skill_system_injected_after_tool": injected_now,
+                "skill_reminder_injected_after_step": reminder_injected_now,
             })
         else:
             logger.warning("Max iterations reached without completion.")
@@ -695,7 +819,15 @@ async def run_agent(config: Config):
             "skill_dir": config.skill_dir,
             "skill_path": skill_path,
             "skill_injected": skill_injected,
-            "skill_injection_position": "system_after_list_tools" if skill_injected else None,
+            "skill_injection_position": "initial_system_and_reminders" if skill_injected else None,
+            "skill_reminder_interval": config.skill_reminder_interval,
+            "skill_reminder_count": skill_reminder_count,
+            "skill_injected_iterations": skill_injected_iterations,
+            "list_tools_format": LIST_TOOLS_FORMAT,
+            "list_tools_calls": list_tools_calls,
+            "tool_help_calls": tool_help_calls,
+            "helped_tools": helped_tools,
+            "tool_calls_without_prior_help": tool_calls_without_prior_help,
             "total_iterations": iteration,
             "timestamp": timestamp,
             "trajectory": trajectory,
