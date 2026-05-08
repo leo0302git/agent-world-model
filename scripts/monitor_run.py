@@ -41,13 +41,30 @@ def scan_run(run_root: Path) -> dict:
     code_counts: Counter[str] = Counter()
     sql_counts: Counter[str] = Counter()
     llm_judge_counts: Counter[str] = Counter()
+    skill_counts: Counter[str] = Counter()
     bad_verify: list[tuple[str, str]] = []
+    bad_trajectory: list[tuple[str, str]] = []
     verified = 0
     code_verified = 0
     sql_verified = 0
     llm_judged = 0
+    trajectory_seen = 0
 
     for task_dir in task_dirs:
+        trajectory_path = task_dir / "trajectory.json"
+        if trajectory_path.exists():
+            trajectory, error = load_json(trajectory_path)
+            if error:
+                bad_trajectory.append((str(trajectory_path.relative_to(run_root)), error))
+            else:
+                trajectory_seen += 1
+                if trajectory.get("skill_injected") is True:
+                    skill_counts["injected"] += 1
+                elif trajectory.get("skill_injected") is False:
+                    skill_counts["not_injected"] += 1
+                else:
+                    skill_counts["unknown"] += 1
+
         task_has_verify = False
         for mode in ("code", "sql"):
             verify_path = task_dir / f"verify.{mode}.json"
@@ -92,7 +109,10 @@ def scan_run(run_root: Path) -> dict:
         "sql_counts": dict(sorted(sql_counts.items())),
         "llm_judged": llm_judged,
         "llm_judge_counts": dict(sorted(llm_judge_counts.items())),
+        "trajectory_seen": trajectory_seen,
+        "skill_counts": dict(sorted(skill_counts.items())),
         "bad_verify": bad_verify,
+        "bad_trajectory": bad_trajectory,
     }
 
 
@@ -109,6 +129,9 @@ def print_report(report: dict, limit_bad: int) -> None:
     judge_total = report["llm_judged"]
     judge_complete = report["llm_judge_counts"].get("complete", 0)
     judge_score = judge_complete / judge_total if judge_total else 0.0
+    trajectory_seen = report["trajectory_seen"]
+    skill_injected = report["skill_counts"].get("injected", 0)
+    skill_rate = skill_injected / trajectory_seen if trajectory_seen else 0.0
 
     print(f"run_root: {report['run_root']}")
     print(f"task_dirs: {report['task_dirs']}")
@@ -126,10 +149,18 @@ def print_report(report: dict, limit_bad: int) -> None:
     print(f"llm_judged: {judge_total}")
     print(f"llm_judge_score: {judge_score:.4f}")
     print(f"llm_judge_counts: {json.dumps(report['llm_judge_counts'], ensure_ascii=False, sort_keys=True)}")
+    print(f"trajectory_seen: {trajectory_seen}")
+    print(f"skill_injected_rate: {skill_rate:.4f}")
+    print(f"skill_counts: {json.dumps(report['skill_counts'], ensure_ascii=False, sort_keys=True)}")
 
     bad_verify = report["bad_verify"]
     print(f"bad_verify: {len(bad_verify)}")
     for rel_path, error in bad_verify[:limit_bad]:
+        print(f"  {rel_path}: {error}")
+
+    bad_trajectory = report["bad_trajectory"]
+    print(f"bad_trajectory: {len(bad_trajectory)}")
+    for rel_path, error in bad_trajectory[:limit_bad]:
         print(f"  {rel_path}: {error}")
 
 
