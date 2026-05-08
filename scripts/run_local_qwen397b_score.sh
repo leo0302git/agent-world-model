@@ -24,6 +24,7 @@ JUDGE_API_URL="${JUDGE_API_URL:-}"
 JUDGE_API_KEY="${JUDGE_API_KEY:-}"
 JUDGE_MODEL="${JUDGE_MODEL:-}"
 JUDGE_PROVIDER="${JUDGE_PROVIDER:-}"
+SKILL_DIR="${SKILL_DIR:-}"
 
 # Set START_SERVER=1 to launch SGLang from MODEL_PATH before scoring.
 # The server is intentionally left running after scoring so GPU memory stays resident
@@ -105,6 +106,7 @@ echo "WORKERS=$WORKERS"
 echo "VERIFY_MODE=$VERIFY_MODE"
 echo "JUDGE_API_URL=${JUDGE_API_URL:-<unset>}"
 echo "JUDGE_MODEL=${JUDGE_MODEL:-<unset>}"
+echo "SKILL_DIR=${SKILL_DIR:-<unset>}"
 
 judge_args=()
 if [[ -n "$JUDGE_API_URL" ]]; then
@@ -118,6 +120,11 @@ if [[ -n "$JUDGE_MODEL" ]]; then
 fi
 if [[ -n "$JUDGE_PROVIDER" ]]; then
   judge_args+=(--judge-provider "$JUDGE_PROVIDER")
+fi
+
+skill_args=()
+if [[ -n "$SKILL_DIR" ]]; then
+  skill_args+=(--skill-dir "$SKILL_DIR")
 fi
 
 "$PYTHON" scripts/run_parallel_local_score.py \
@@ -135,6 +142,7 @@ fi
   --max-tokens "$MAX_TOKENS" \
   --temperature "$TEMPERATURE" \
   --run-name "$AWM_RUN_NAME" \
+  "${skill_args[@]}" \
   "${judge_args[@]}"
 
 echo "Run root: outputs/runs/$AWM_RUN_NAME"

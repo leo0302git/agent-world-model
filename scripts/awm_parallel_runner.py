@@ -63,6 +63,7 @@ class RunnerConfig:
     judge_api_key: str | None
     judge_model: str | None
     judge_provider: str | None
+    skill_dir: Path | None
     resume: bool
     verbose: bool
     run_root: Path
@@ -156,6 +157,7 @@ def write_manifest(config: RunnerConfig, tasks: list[TaskItem]) -> None:
         "judge_api_url": config.judge_api_url,
         "judge_model": config.judge_model,
         "judge_provider": config.judge_provider,
+        "skill_dir": str(config.skill_dir) if config.skill_dir else None,
         "tasks": [asdict(task) for task in tasks],
     }
     with (config.run_root / "manifest.json").open("w", encoding="utf-8") as f:
@@ -296,6 +298,9 @@ def run_task(task: TaskItem, config: RunnerConfig) -> dict:
         "--verbose",
         str(config.verbose),
     ]
+    if config.skill_dir:
+        agent_cmd.extend(["--skill_dir", str(config.skill_dir)])
+
     agent_rc = run_command(agent_cmd, env, output_dir / "runner_agent.log")
     if agent_rc != 0:
         return {"status": "agent_failed", "returncode": agent_rc, "task": asdict(task), "port": port}
@@ -449,6 +454,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-api-key", default=os.environ.get("JUDGE_API_KEY"))
     parser.add_argument("--judge-model")
     parser.add_argument("--judge-provider")
+    parser.add_argument("--skill-dir", type=Path)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--verbose", action=argparse.BooleanOptionalAction, default=True)
 
@@ -475,6 +481,7 @@ def config_from_args(args: argparse.Namespace, prefix: str) -> RunnerConfig:
         judge_api_key=args.judge_api_key,
         judge_model=args.judge_model,
         judge_provider=args.judge_provider,
+        skill_dir=args.skill_dir,
         resume=args.resume,
         verbose=args.verbose,
         run_root=run_root,

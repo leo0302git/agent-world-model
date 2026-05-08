@@ -101,6 +101,9 @@ class Config:
     run_root: str | None = None
     # Run name under outputs/runs. Can also be set with AWM_RUN_NAME.
     run_name: str | None = None
+    # Directory containing per-scenario skill.md files, e.g. by_scenario/<scenario>/skill.md.
+    # Missing skill files are ignored and the agent runs without skill injection.
+    skill_dir: str | None = None
     # Path to generated environments file
     envs_path: str = "./outputs/gen_envs.jsonl"
     # Path to generated tasks file
@@ -145,7 +148,24 @@ def resolve_output_dir(config: Config, scenario: str | None, task_id: int | None
     return output_dir, run_root
 
 
-def get_system_prompt() -> str:
+def load_scenario_skill(skill_dir: str | None, scenario: str | None) -> tuple[str | None, str | None]:
+    if not skill_dir or not scenario:
+        return None, None
+
+    skill_path = os.path.join(skill_dir, normalize_scenario_name(scenario), "skill.md")
+    if not os.path.exists(skill_path):
+        logger.warning(f"Skill file not found for scenario={scenario}: {skill_path}")
+        return None, skill_path
+
+    with open(skill_path, "r", encoding="utf-8") as f:
+        skill = f.read().strip()
+    if not skill:
+        logger.warning(f"Skill file is empty for scenario={scenario}: {skill_path}")
+        return None, skill_path
+    return skill, skill_path
+
+
+def get_system_prompt(skill: str | None = None) -> str:
     tools_str = dedent("""\
         1. list_tools
             - Description: List all available MCP tools for the current environment to help you finish the user task.
@@ -159,7 +179,7 @@ def get_system_prompt() -> str:
                 - arguments: str, required, the arguments for calling <tool_name>. You must pass a valid JSON string without any markdown fences or additional commentary. This JSON str will be parsed by the tool and executed. You can pass an empty JSON str if no arguments are required by <tool_name>.
             - Output: The result of the <tool_name> tool call""")
 
-    return dedent(f"""\
+    prompt = dedent(f"""\
         # MCP Toolss
 
         You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
@@ -185,6 +205,20 @@ def get_system_prompt() -> str:
         <tool_call>
         {{"name": "call_tool", "arguments": {{"tool_name": "get_weather", "arguments": "{{"city": "Beijing"}}"}}}}
         </tool_call>""")
+
+    if skill:
+        prompt += dedent(f"""\
+
+
+            # Scenario Skill
+
+            The following scenario-specific skill may help solve the task. Treat it as operational guidance, not as user-provided facts. Prefer live tool results over the skill if they conflict.
+
+            <scenario_skill>
+            {skill}
+            </scenario_skill>""")
+
+    return prompt
 
 
 def parse_tool_calls(content: str) -> list[dict]:
@@ -523,6 +557,12 @@ async def run_agent(config: Config):
         logger.info(f"Output: {output_dir}")
         logger.info("=" * 80)
 
+        skill, skill_path = load_scenario_skill(config.skill_dir, scenario)
+        if skill:
+            logger.info(f"Loaded scenario skill: {skill_path} ({len(skill)} chars)")
+        elif skill_path:
+            logger.info(f"No scenario skill injected: {skill_path}")
+
         mcp = MCPToolExecutor(mcp_url)
         llm_client = AsyncOpenAI(
             api_key=api_key,
@@ -535,7 +575,7 @@ async def run_agent(config: Config):
         tools_response_text = format_tools_for_response(tools)
 
         messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt()},
+            {"role": "system", "content": get_system_prompt(skill)},
             {"role": "user", "content": task},
         ]
 
@@ -638,6 +678,9 @@ async def run_agent(config: Config):
             "api_url": api_url,
             "max_iterations": config.max_iterations,
             "temperature": config.temperature,
+            "skill_dir": config.skill_dir,
+            "skill_path": skill_path,
+            "skill_injected": bool(skill),
             "total_iterations": iteration,
             "timestamp": timestamp,
             "trajectory": trajectory,
