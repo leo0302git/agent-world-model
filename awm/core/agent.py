@@ -165,7 +165,7 @@ def load_scenario_skill(skill_dir: str | None, scenario: str | None) -> tuple[st
     return skill, skill_path
 
 
-def get_system_prompt(skill: str | None = None) -> str:
+def get_system_prompt() -> str:
     tools_str = dedent("""\
         1. list_tools
             - Description: List all available MCP tools for the current environment to help you finish the user task.
@@ -179,7 +179,7 @@ def get_system_prompt(skill: str | None = None) -> str:
                 - arguments: str, required, the arguments for calling <tool_name>. You must pass a valid JSON string without any markdown fences or additional commentary. This JSON str will be parsed by the tool and executed. You can pass an empty JSON str if no arguments are required by <tool_name>.
             - Output: The result of the <tool_name> tool call""")
 
-    prompt = dedent(f"""\
+    return dedent(f"""\
         # MCP Toolss
 
         You are at a MCP environment. You need to call MCP tools to assist with the user query. At each step, you can only call one function. You have already logged in, and your user id is 1 if required for the MCP tool.
@@ -206,19 +206,22 @@ def get_system_prompt(skill: str | None = None) -> str:
         {{"name": "call_tool", "arguments": {{"tool_name": "get_weather", "arguments": "{{"city": "Beijing"}}"}}}}
         </tool_call>""")
 
-    if skill:
-        prompt += dedent(f"""\
+
+def append_skill_to_list_tools_response(response_text: str, skill: str | None) -> tuple[str, bool]:
+    if not skill:
+        return response_text, False
+
+    skill_block = dedent(f"""\
 
 
-            # Scenario Skill
+        # Scenario Skill
 
-            The following scenario-specific skill may help solve the task. Treat it as operational guidance, not as user-provided facts. Prefer live tool results over the skill if they conflict.
+        Use the following scenario-specific skill as a planning hint after inspecting the live tools above. You must still use exact tool names and argument schemas from the live tool list. Do not call a tool solely because it appears in the skill. Prefer the user task and live tool results over the skill if they differ.
 
-            <scenario_skill>
-            {skill}
-            </scenario_skill>""")
-
-    return prompt
+        <scenario_skill>
+        {skill}
+        </scenario_skill>""")
+    return response_text.rstrip() + skill_block, True
 
 
 def parse_tool_calls(content: str) -> list[dict]:
@@ -575,9 +578,10 @@ async def run_agent(config: Config):
         tools_response_text = format_tools_for_response(tools)
 
         messages: list[dict] = [
-            {"role": "system", "content": get_system_prompt(skill)},
+            {"role": "system", "content": get_system_prompt()},
             {"role": "user", "content": task},
         ]
+        skill_injected = False
 
         # Trajectory recording
         trajectory: list[dict] = []
@@ -625,7 +629,10 @@ async def run_agent(config: Config):
             # execute tool call
             if name == "list_tools":
                 logger.info("Executing: list_tools")
-                response_text = tools_response_text
+                response_text, injected_now = append_skill_to_list_tools_response(tools_response_text, skill)
+                skill_injected = skill_injected or injected_now
+                if injected_now:
+                    logger.info("Injected scenario skill after list_tools response")
 
             elif name == "call_tool":
                 tool_name, tool_args = parse_call_tool_arguments(arguments)
@@ -680,7 +687,8 @@ async def run_agent(config: Config):
             "temperature": config.temperature,
             "skill_dir": config.skill_dir,
             "skill_path": skill_path,
-            "skill_injected": bool(skill),
+            "skill_injected": skill_injected,
+            "skill_injection_position": "after_list_tools" if skill_injected else None,
             "total_iterations": iteration,
             "timestamp": timestamp,
             "trajectory": trajectory,
