@@ -14,6 +14,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -98,6 +99,21 @@ def default_run_name(prefix: str, model: str) -> str:
     safe_model = model.split("/")[-1].replace(" ", "_").replace(":", "_")
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{safe_model}_{timestamp}"
+
+
+def format_duration(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{secs:02d}s"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def load_scenarios(tasks_path: Path, scenario_limit: int | None) -> list[tuple[str, int]]:
@@ -385,6 +401,8 @@ def write_summary(run_root: Path, mode: str) -> dict:
 
 
 def run_parallel(config: RunnerConfig) -> dict:
+    start_monotonic = time.monotonic()
+    started_at = utc_now_iso()
     if config.workers < 1:
         raise ValueError("--workers must be >= 1")
     if config.port_stride < 1:
@@ -431,6 +449,11 @@ def run_parallel(config: RunnerConfig) -> dict:
         if not interrupted:
             executor.shutdown(wait=True)
         summary = write_summary(config.run_root, config.verify_mode)
+        elapsed_seconds = time.monotonic() - start_monotonic
+        summary["started_at"] = started_at
+        summary["finished_at"] = utc_now_iso()
+        summary["elapsed_seconds"] = round(elapsed_seconds, 3)
+        summary["elapsed"] = format_duration(elapsed_seconds)
         summary["runner_statuses"] = dict(sorted(statuses.items()))
         summary["runner_failures"] = failures
         summary["interrupted"] = interrupted
