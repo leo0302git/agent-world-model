@@ -384,7 +384,7 @@ kill -TERM "$(cat /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25
 
     /data1/jczhong/repos/agent-world-model/.venv/bin/python \
   /data1/jczhong/repos/agent-world-model/scripts/monitor_run.py \
-  /data1/jczhong/repos/agent-world-model/outputs/runs/awm_prompt_v2_dmxapi_w4_100 \
+  /data1/jczhong/repos/agent-world-model/outputs/runs/awm_qwen25_7b_static8314_runtime_w256p64_v1 \
   --watch \
   --interval 1
 ```
